@@ -1,0 +1,13 @@
+- name: Add nginx repo
+  kubernetes.core.helm_repository:
+    name: nginx
+    repo_url: "https://kubernetes.github.io/ingress-nginx"
+- name: Install nginx
+  kubernetes.core.helm:
+    update_repo_cache: yes
+    name: nginx
+    namespace: kube-system
+    chart_ref: nginx/ingress-nginx
+    values:
+      defaultBackend:
+        enabled: false

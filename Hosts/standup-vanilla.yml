@@ -1,0 +1,126 @@
+# Options for running:
+#
+# ansible-playbook standup-vanilla-hosts.yml
+# ansible-playbook standup-vanilla-hosts.yml --extra-vars "rawhosts=pi1"
+# ansible-playbook standup-vanilla-hosts.yml --extra-vars "rawhosts=nuc1,nuc2 user=ubuntu pass=ubuntuRaw nameservers=10.1.0.1,1.1.1.1 timezone=EST"
+
+- hosts: localhost
+  become: no
+  tasks:
+    # Play init
+    - include_tasks: tasks/ensure-appropriate-files-are-in-place.yml
+
+    # Create or read in vanilla host
+    - name: Get raw hosts (if any)
+      set_fact:
+        addresses: "{{ rawhosts.split(',') if rawhosts is not undefined else [] }}"
+    - name: Run with passed in raw hosts
+      when: addresses | length != 0
+      block:
+        - name: Make sure all raw hostnames are unique
+          assert:
+            that: rawhosts.split(',') | count == rawhosts.split(',') | unique | count
+            fail_msg: "Two of your nodes are named the same thing"
+            quiet: yes
+        - name: add hosts
+          add_host:
+            name: "{{ item }}"
+            ansible_connection: ssh
+            ansible_user: "{{ user | default('hab', true) }}"
+            ansible_ssh_pass: "{{ pass | default('vanillaHab', true) }}"
+            group: hostlist
+            ansible_host: "{{ item }}"
+          loop: "{{ addresses }}"
+    - name: Run with vanilla-hosts
+      when: addresses | length == 0
+      block:
+        - name: Read in all existing vanilla-hosts
+          command: grep "^[^#[]" ~/.HAB/inventory/vanilla-hosts
+          register: vanillaHosts
+          failed_when: false
+        - name: failed
+          fail:
+            msg: It doesn't look like you have validated any vanilla hosts yet, run with --extra-vars 'rawhosts=pi1'
+          when: vanillaHosts.rc != 0
+        - name: add hosts
+          add_host:
+            name: "{{ item.split(' ')[0] }}"
+            ansible_ssh_pass: "{{ item.split(' ')[2].split('=')[1] }}"
+            group: hostlist
+            ansible_host: "{{ item.split(' ')[0] }}"
+            ansible_user: "{{ item.split(' ')[1].split('=')[1] }}"
+            ansible_connection: ssh
+          loop: "{{ vanillaHosts.stdout_lines }}"
+
+- hosts: hostlist
+  become: yes
+  vars:
+    macAddr: "{{ ansible_facts.default_ipv4.macaddress }}"
+    hostName: "{{ ansible_facts.hostname }}"
+  tasks:
+    # Validate hostnames: Imported because used as a one off to check names
+    - include_tasks: tasks/validate-host-name.yml
+    - name: Get vanilla hosts
+      set_fact:
+        vanillaHosts: "{{ lookup('pipe', 'cat ~/.HAB/inventory/vanilla-hosts').split('\n') }}"
+    - name: Assert that the hostname is not used elsewhere
+      assert:
+        that: vanillaHosts | select('match', '^({{ hostName }}).+(?<!{{ macAddr }})$') | length == 0
+        fail_msg: "The given hostname {{ hostName }} already exists in the vanillahosts inventory"
+        quiet: yes
+
+    # Determin the OS for each host, and take appropriate action
+    - name: If Ubuntu, execute Ubuntu specific tasks
+      when: ansible_distribution == "Ubuntu"
+      include_tasks: tasks/vanilla-ubuntu-specific-tasks.yml
+    - name: Determine if Raspberry Pi
+      lineinfile:
+        dest: /sys/firmware/devicetree/base/model
+        line: "Raspberry"
+      check_mode: yes
+      register: hostIsRPi
+      failed_when: false
+    - name: If Pi, execute Raspberry Pi specific tasks
+      when: hostIsRPi.changed
+      include_tasks: tasks/vanilla-pi-specific-tasks.yml
+
+    # Actions applied to all hosts
+    - include_tasks: tasks/update-upgrade-host.yml
+    - include_tasks: tasks/install-host-base-packages.yml
+    - name: Make sure we have a 'wheel' group
+      group:
+        name: wheel
+        state: present
+    - name: Allow 'wheel' group to have passwordless sudo
+      lineinfile:
+        path: /etc/sudoers
+        state: present
+        regexp: "^%wheel"
+        line: "%wheel ALL=(ALL) NOPASSWD: ALL"
+        validate: "visudo -cf %s"
+    - name: Reboot every host once stood up
+      reboot:
+    - name: Write raw host to vanilla-hosts
+      become: no
+      throttle: 1
+      local_action:
+        module: lineinfile
+        dest: ~/.HAB/inventory/vanilla-hosts
+        line: "{{ hostName }} ansible_user={{ ansible_user }} ansible_ssh_pass={{ ansible_ssh_pass }} mac={{ macAddr }}"
+        search_string: "{{ macAddr }}"
+
+- hosts: localhost
+  become: no
+  tasks:
+    - name: Read all new / current vanilla hosts
+      command: grep "^[^#[]" ~/.HAB/inventory/vanilla-hosts
+      register: newVanillaHosts
+      changed_when: false
+    - name: Ensure host-plan.tpl has current-vanilla-hosts
+      lineinfile:
+        path: ~/.HAB/inventory/host-plan.tpl
+        line: "# {{ item }}"
+        search_string: item.split(' ')[3]
+        state: present
+        insertbefore: End Of Unassigned Inventory
+      loop: "{{ newVanillaHosts.stdout_lines }}"

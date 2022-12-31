@@ -1,0 +1,39 @@
+- hosts: localhost
+  gather_facts: no
+  become: no
+  tasks:
+    # Install plugins
+    - name: Ensure Helm Diff Plugin is installed
+      kubernetes.core.helm_plugin:
+        plugin_path: https://github.com/databus23/helm-diff
+        state: present
+
+    # Check that each node is ready for longhorn
+    - name: Run longhorn environment check
+      shell: curl -sSfL https://raw.githubusercontent.com/longhorn/longhorn/v1.3.2/scripts/environment_check.sh | bash
+      changed_when: false
+
+    # Install k3s automated upgrades
+    - include_tasks: tasks/system-upgrade-controller.yml
+
+    # Add and Install MetalLB
+    - include_tasks: tasks/metalLB.yml
+
+    # Add and Install nginx
+    - include_tasks: tasks/nginx.yml
+
+    # Make sure that metelLB and nginx are exposing services to the outside
+    - name: Make sure an external IP is assigned to nginx ingress
+      command: "kubectl get services nginx-ingress-nginx-controller -n kube-system"
+      register: status
+      until: '" <none> " not in status.stdout'
+      retries: 10
+      delay: 5
+      failed_when: '" <none> " in status.stdout'
+      changed_when: false
+
+    # Add and Install Cert Manager
+    - include_tasks: tasks/cert-manager.yml
+
+    # Add and Install Longhorn
+    - include_tasks: tasks/longhorn.yml

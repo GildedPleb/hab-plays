@@ -1,0 +1,28 @@
+# This is a standard update / upgrade script for linux systems
+- name: Run the equivalent of "apt-get update"
+  apt:
+    update_cache: yes
+  register: result
+  retries: 10
+  delay: 10
+  until: result is not failed
+- name: Run the equivalent of "apt-get full-upgrade"
+  apt:
+    upgrade: full
+  register: result
+  retries: 10
+  delay: 10
+  until: result is not failed
+- name: Run the equivalent of "apt-get dist-upgrade"
+  apt:
+    upgrade: dist
+  register: result
+  retries: 10
+  delay: 10
+  until: result is not failed
+- name: In case there needs fixing...
+  apt:
+    name: "*"
+    state: fixed
+    autoclean: yes
+    autoremove: yes

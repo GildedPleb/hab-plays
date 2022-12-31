@@ -1,0 +1,84 @@
+- hosts: localhost
+  tasks:
+    # Unistall Longhorn Resources
+    - name: Unistall Longhorn Encryption secret
+      kubernetes.core.k8s:
+        state: absent
+        definition:
+          kind: Secret
+          metadata:
+            name: longhorn-crypto
+            namespace: longhorn-system
+    - name: Uninstall longhorn certificate
+      kubernetes.core.k8s:
+        state: absent
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: longhorn-tls
+            namespace: longhorn-system
+    - name: Uninstall longhorn ingress
+      kubernetes.core.k8s:
+        state: absent
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: longhorn-ingress
+            namespace: longhorn-system
+    - name: Uninstall longhorn auth secret
+      kubernetes.core.k8s:
+        state: absent
+        definition:
+          kind: Secret
+          metadata:
+            name: basic-auth
+            namespace: longhorn-system
+    - name: Uninstall Longhorn
+      kubernetes.core.helm:
+        name: longhorn
+        namespace: longhorn-system
+        state: absent
+        wait: yes
+    - name: Delete Longhorn namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: longhorn-system
+        state: absent
+
+    # TODO: Add proper host level cleanup -- aka remove longhorn artifacts and files on each host. as per: https://github.com/ricsanfre/pi-cluster/blob/8e303719a4111be603c8b32bfa339f0f253f4172/tasks/cleaning.yml
+
+    # Unistall Cert Mananger, Ingress, and Load Balancer
+    - name: Uninstall Cert Manager
+      kubernetes.core.helm:
+        namespace: cert-manager
+        name: cert-manager
+        state: absent
+        wait: true
+    - name: Delete Cert Manager namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: cert-manager
+        state: absent
+    - name: Uninstall nginx
+      kubernetes.core.helm:
+        namespace: kube-system
+        name: nginx
+        state: absent
+        wait: true
+    - name: Uninstall metallb
+      kubernetes.core.helm:
+        namespace: kube-system
+        name: metallb
+        state: absent
+        wait: true
+
+    # Uninstall upgrade automation
+    - name: Uninstall upgrade automation
+      kubernetes.core.k8s:
+        state: absent
+        src: ./charts/SUC/system-upgrade-controller.yaml
+        wait: yes

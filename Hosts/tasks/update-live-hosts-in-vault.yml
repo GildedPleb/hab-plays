@@ -1,0 +1,52 @@
+# Generate and format password
+- name: generate random password for user
+  shell: /usr/bin/openssl rand -base64 63 | tr -d '\n'
+  register: newPassword
+  no_log: true
+- name: generate random salt for user
+  command: /usr/bin/openssl rand -base64 12
+  register: salt
+  no_log: true
+- name: generate password hash for user
+  shell: /usr/bin/openssl passwd -salt '{{ salt.stdout }}' -6 '{{ newPassword.stdout }}'
+  register: hashed
+  no_log: true
+
+# Read and update Vault with new password
+- name: Read data from vaulted file
+  become: false
+  local_action:
+    module: shell
+    cmd: ANSIBLE_CONFIG=../ansible.cfg ansible-vault view ~/.HAB/vault-hosts
+  register: prevHosts
+  changed_when: false
+  no_log: true
+- name: Define new host and password vault entry
+  set_fact:
+    newUserPass: "{{ inventory_hostname }}: '{{ hostType }} {{ newPassword.stdout }}'"
+  no_log: true
+- name: If the host already exists in the vault but with a different user and pass, replace it
+  set_fact:
+    newVault: "{{ newVault + [ newUserPass if item.split(' ')[0] == inventory_hostname + ':' else item ] }}"
+  loop: "{{ prevHosts.stdout_lines }}"
+  no_log: true
+- name: If the host is not in vault, add it to vault
+  when: newUserPass not in newVault
+  set_fact:
+    newVault: "{{ newVault + [ newUserPass ] }}"
+  no_log: true
+- name: Write new vault definitions to file
+  when: newVault | length != 0
+  become: false
+  local_action:
+    module: shell
+    cmd: ANSIBLE_CONFIG=../ansible.cfg ansible-vault encrypt --output ~/.HAB/vault-hosts
+    args:
+      stdin: "{{ '\n'.join(newVault) }}"
+  no_log: true
+- name: Set new user password to the vault password on that host
+  user:
+    name: "{{ hostType }}"
+    password: "{{ hashed.stdout }}"
+    generate_ssh_key: yes
+    ssh_key_bits: 4096

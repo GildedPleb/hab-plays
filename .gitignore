@@ -1,0 +1,5 @@
+Hosts/inventory/
+K3s/tasks/*.sh
+K3s/tasks/*.crt
+K3s/charts/CSI-Snapshotter/
+K3s/charts/SUC/system-upgrade-controller.yaml

@@ -1,0 +1,26 @@
+- name: Download system-upgrade-controller manifest to the local machine.
+  get_url:
+    url: https://github.com/rancher/system-upgrade-controller/releases/latest/download/system-upgrade-controller.yaml
+    dest: charts/SUC/system-upgrade-controller.yaml
+    mode: "0664"
+- name: Add system-upgrade-controller
+  kubernetes.core.k8s:
+    namespace: system-upgrade
+    apply: yes
+    src: charts/SUC/system-upgrade-controller.yaml
+    state: present
+    wait: yes
+- name: Add system-upgrade-controller plan for servers
+  kubernetes.core.k8s:
+    namespace: system-upgrade
+    apply: yes
+    src: charts/SUC/plan-server.yml
+    state: present
+    wait: yes
+- name: Add system-upgrade-controller plan for agents
+  kubernetes.core.k8s:
+    namespace: system-upgrade
+    apply: yes
+    src: charts/SUC/plan-agent.yml
+    state: present
+    wait: yes

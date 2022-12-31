@@ -1,0 +1,105 @@
+- hosts: cluster
+  become: yes
+  tasks:
+    # If k3s is running, we should not tear down live hosts.
+    - name: Make sure k3s is NOT running on all hosts
+      systemd:
+        name: k3s
+      register: results
+    - name: Fail if k3s still running...
+      when:
+        - results.status.ActiveState != "inactive"
+        - ( killhosts is undefined ) or ( inventory_hostname is in killhosts )
+      fail:
+        msg: It appears that k3s might still be running. Please teardown vanilla k3s for the appropriate hosts and make sure it exits without failure before running this command.
+      any_errors_fatal: true
+    - name: Make sure k3s-agent is NOT running on all hosts
+      systemd:
+        name: k3s-agent
+      register: results
+    - name: Fail if k3s still running...
+      when:
+        - results.status.ActiveState != "inactive"
+        - ( killhosts is undefined ) or ( inventory_hostname is in killhosts )
+      fail:
+        msg: It appears that k3s-agent might still be running. Please teardown vanilla k3s for the appropriate hosts and make sure it exits without failure before running this command.
+      any_errors_fatal: true
+
+    # Enable all disabled users
+    - name: Get all sudo users
+      shell: "grep '^sudo:.*$' /etc/group | cut -d: -f4"
+      register: sudoers
+      changed_when: false
+    - name: Get all the sudo users who are to be re-enabled
+      set_fact:
+        usersToEnable: "{{ sudoers.stdout.split(',') | difference([ ansible_user ])  }}"
+    - name: Enable Vanilla User
+      when: ( killhosts is undefined ) or ( inventory_hostname is in killhosts )
+      user:
+        name: "{{ item }}"
+        password_lock: no
+      loop: "{{ usersToEnable }}"
+    - name: End ssh connection so we can delete these users
+      when: ( killhosts is undefined ) or ( inventory_hostname is in killhosts )
+      meta: end_host
+
+- hosts: localhost
+  become: no
+  tasks:
+    # Read in the vanilla hosts
+    - name: Read in all existing vanilla-hosts
+      command: grep "^[^#[]" ~/.HAB/inventory/vanilla-hosts
+      register: vanillaHosts
+      failed_when: false
+      changed_when: false
+    - name: If the previous task has failed...
+      when: vanillaHosts.rc != 0
+      fail:
+        msg: It doesn't look like you have any vanilla hosts yet, which can only mean the file was mistakenly altered. You're best bet is to try to restore it, your second best bet is to re-image all hosts and start over.
+    - name: Add vanilla hosts to current run
+      when: "( killhosts is undefined ) or ( item.split(' ')[0] is in killhosts )"
+      add_host:
+        name: "{{ item.split(' ')[0] }}"
+        ansible_ssh_pass: "{{ item.split(' ')[2].split('=')[1] }}"
+        group: vanillaHostList
+        ansible_host: "{{ item.split(' ')[0] }}"
+        ansible_user: "{{ item.split(' ')[1].split('=')[1] }}"
+        ansible_connection: ssh
+      loop: "{{ vanillaHosts.stdout_lines }}"
+
+    # Remove Existant Hosts file
+    - name: Remove Hosts File
+      when: killhosts is undefined
+      file:
+        path: ~/.HAB/inventory/hosts
+        state: absent
+    - name: Remove individual hosts from host file
+      when:
+        - killhosts is defined
+        - "item.split(' ')[0] is in killhosts"
+      lineinfile:
+        path: ~/.HAB/inventory/hosts
+        state: absent
+        regexp: "^{{ item.split(' ')[0] }}"
+      loop: "{{ vanillaHosts.stdout_lines }}"
+
+- hosts: vanillaHostList
+  become: yes
+  tasks:
+    # Delete Live User
+    - name: Get all sudo users
+      shell: "grep '^sudo:.*$' /etc/group | cut -d: -f4"
+      register: sudoers
+      changed_when: false
+    - name: Get all the sudo users who are to be deleted
+      set_fact:
+        usersToRemove: "{{ sudoers.stdout.split(',') | difference([ ansible_user ])  }}"
+    - name: Remove deactivated Live Host Users
+      user:
+        name: "{{ item }}"
+        state: absent
+        remove: yes
+        force: yes
+      loop: "{{ usersToRemove }}"
+    - name: Reboot the host
+      reboot:

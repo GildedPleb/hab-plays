@@ -1,0 +1,10 @@
+- name: Make sure all characters in hostnames are lowercase alphanumeric '-' or '.'
+  assert:
+    that: hostName is match('^[a-z0-9][a-z0-9.-]{0,}[a-z0-9]$')
+    quiet: yes
+    fail_msg: "The node name '{{ hostName }}' either: 1. Starts or ends with something other than alphanumeric, 2. Is not all lowercase, or 3. Includes an invalid character"
+- name: Make sure hostnames are less than 253 characters
+  assert:
+    that: hostName | length < 253
+    quiet: yes
+    fail_msg: "The node name '{{ hostName }}' is longer than 253 characters"

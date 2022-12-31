@@ -1,0 +1,23 @@
+- set_fact:
+    packages:
+      - open-iscsi
+      - iptables
+      - cryptsetup
+      - nfs-common
+      - jq
+      - gdisk
+- name: Ensure a list of packages installed
+  apt:
+    name: "{{ packages }}"
+    state: present
+  register: result
+  retries: 10
+  delay: 10
+  until: result is not failed
+
+  # Required for longhorn
+- name: Ensure iscsi is running on boot and is started
+  systemd:
+    name: iscsid
+    state: started
+    enabled: yes

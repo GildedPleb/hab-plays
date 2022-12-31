@@ -1,0 +1,40 @@
+- name: Update /etc/hosts to have this host name
+  lineinfile:
+    path: /etc/hosts
+    search_string: '127.0.1.1'
+    line: "127.0.1.1 {{ hostName }}"
+
+- name: Ensure resolvconf installed
+  apt:
+    name: resolvconf
+    state: present
+  register: result
+  retries: 10
+  delay: 10
+  until: result is not failed
+- name: Make sure resolvconf is running on boot and is started
+  systemd:
+    name: resolvconf
+    state: started
+    enabled: yes
+- set_fact:
+    nsRaw: "{{ nameservers | default('1.1.1.1', true) }}"
+- name: Make sure nameservers exist
+  lineinfile:
+    line: "{{ item }}"
+    insertafter: EOF
+    path: /etc/resolvconf/resolv.conf.d/head
+    state: present
+  loop: "{{ ['nameserver '] | product(nsRaw.split(',')) | map('join') }}"
+- name: Make sure resolvconf and system-resolved are restarted
+  systemd:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: yes
+  loop:
+    - resolvconf
+    - systemd-resolved
+
+- name: Set timezone appropriately
+  community.general.timezone:
+    name: "{{ timezone | default('US/Pacific', true) }}"

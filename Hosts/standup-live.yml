@@ -1,0 +1,227 @@
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    # Make sure we can move forward with the plan
+    - name: Make sure we can read data from vault-hosts file
+      shell: "ANSIBLE_CONFIG=../ansible.cfg ansible-vault view ~/.HAB/vault-hosts"
+      register: results
+      changed_when: false
+      failed_when: false
+      no_log: true
+    - name: If failed throw...
+      when: results.rc != 0
+      fail:
+        msg: We were unable to read the file ~/.HAB/vault-hosts this is probably because it doesn't exist or has been corrupted. You must complete the steps in the tutorial w/r/t Ansible Vault before standing up live hosts.
+
+    # Read in the plan, and assert that it is good
+    - name: "Read in the host plan from file: {{ plan }}"
+      command: 'grep "^[^#;]" ~/.HAB/inventory/{{ plan }}'
+      register: hostPlanRaw
+      failed_when: false
+      changed_when: false
+    - name: If the previous task failed...
+      when: hostPlanRaw.rc != 0
+      fail:
+        msg: It doesn't look like you have created a plan with that name yet
+    - name: Conform all the hosts from the plan
+      set_fact:
+        hostPlan: "{{ hostPlanRaw.stdout_lines }}"
+    - name: Populate the leader
+      set_fact:
+        leader: "{{ hostPlan[hostPlan.index('[leader]') + 1:hostPlan.index('[lieutenants]')] }}"
+    - name: Populate the lieutenants
+      set_fact:
+        lieutenants: "{{ hostPlan[hostPlan.index('[lieutenants]') + 1:hostPlan.index('[workers]')] }}"
+    - name: Populate the workers
+      set_fact:
+        workers: "{{ hostPlan[hostPlan.index('[workers]') + 1:] }}"
+    - name: Populate all vanilla hosts
+      set_fact:
+        vanillaHosts: "{{ leader + lieutenants + workers}}"
+    - name: Populate all masters
+      set_fact:
+        masters: "{{ leader + lieutenants }}"
+    - name: Make sure there is only one leader node
+      assert:
+        that: leader | length == 1
+        quiet: yes
+        fail_msg: "There must be no more than one leader"
+    - name: Make sure there is enough nodes for HA
+      assert:
+        that: masters | length >= 3
+        quiet: yes
+        fail_msg: "There must be at least 3 master nodes for HA"
+    - name: Make sure that there is an odd number of master nodes
+      assert:
+        that: masters | length % 2 == 1
+        quiet: yes
+        fail_msg: "There must be an odd number of master nodes"
+
+    # Populate vanilla host list for standing up live hosts
+    - name: Add the leader to VanillaHosts list, if not already live
+      when: ((groups.leader is defined) and (leader[0].split(' ')[0] not in groups.leader)) or (groups.leader is undefined)
+      add_host:
+        name: "{{ leader[0].split(' ')[0] }}"
+        ansible_host: "{{ leader[0].split(' ')[0] }}"
+        ansible_connection: ssh
+        ansible_user: "{{ leader[0].split(' ')[1].split('=')[1] }}"
+        ansible_ssh_pass: "{{ leader[0].split(' ')[2].split('=')[1] }}"
+        group: VanillaHosts
+        k3s_roll: leader
+        k3s_type: master
+      changed_when: false
+    - name: Add the lieutenants to VanillaHosts list, if not already live
+      when: ((groups.lieutenants is defined) and (item.split(' ')[0] not in groups.lieutenants)) or (groups.lieutenants is undefined)
+      add_host:
+        name: "{{ item.split(' ')[0] }}"
+        ansible_host: "{{ item.split(' ')[0] }}"
+        ansible_connection: ssh
+        ansible_user: "{{ item.split(' ')[1].split('=')[1] }}"
+        ansible_ssh_pass: "{{ item.split(' ')[2].split('=')[1] }}"
+        group: VanillaHosts
+        k3s_roll: lieutenant
+        k3s_type: master
+      loop: "{{ lieutenants }}"
+    - name: Add the workers to VanillaHosts list, if not already live
+      when: ((groups.workers is defined) and (item.split(' ')[0] not in groups.workers)) or (groups.workers is undefined)
+      add_host:
+        name: "{{ item.split(' ')[0] }}"
+        ansible_host: "{{ item.split(' ')[0] }}"
+        ansible_connection: ssh
+        ansible_user: "{{ item.split(' ')[1].split('=')[1] }}"
+        ansible_ssh_pass: "{{ item.split(' ')[2].split('=')[1] }}"
+        group: VanillaHosts
+        k3s_roll: worker
+        k3s_type: worker
+      loop: "{{ workers }}"
+    - name: When there are no VanillaHosts, end the playbook
+      block:
+        - debug:
+            msg: There are no host that can be stood up which are not already set up, or who have been entered into the vanilla state correctly. Exiting.
+        - meta: end_play
+      when: groups.VanillaHosts is undefined
+
+- hosts: VanillaHosts
+  become: yes
+  serial: 1
+  vars:
+    - newVault: []
+  tasks:
+    - name: When there are no VanillaHosts, end the playbook
+      block:
+        - debug:
+            msg: There are no host that can be stood up which are not already set up, or who have been entered into the vanilla state correctly. Exiting.
+        - meta: end_play
+      when: groups.VanillaHosts is undefined
+
+    # Create new User
+    - name: Get the k3s roll of the current host
+      set_fact:
+        hostType: "{{ hostvars[inventory_hostname].k3s_roll }}"
+    - name: Make sure a user with this correct name exists
+      user:
+        name: "{{ hostType }}"
+        groups:
+          - sudo
+          - wheel
+        state: present
+        shell: /bin/bash
+      register: newUser
+
+    # Add new user to vault by creating a password on remote machines
+    # (to obviate differences in hashing on different OSs destroying passwords access)
+    - name: If a new user was defined, run tasks to update password
+      when: newUser.changed
+      include_tasks: tasks/update-live-hosts-in-vault.yml
+
+- hosts: VanillaHosts
+  become: yes
+  tasks:
+    - name: When there are no VanillaHosts, end the playbook
+      block:
+        - debug:
+            msg: There are no host that can be stood up which are not already set up, or who have been entered into the vanilla state correctly. Exiting.
+        - meta: end_play
+      when: groups.VanillaHosts is undefined
+
+    # Move SSH Keys over to the remote node
+    - name: Get the k3s roll of the current host
+      set_fact:
+        hostType: "{{ hostvars[inventory_hostname].k3s_roll }}"
+    - name: Transfer local SSH keys to remote host for password-less access
+      ansible.posix.authorized_key:
+        user: "{{ hostType }}"
+        state: present
+        key: "{{ item }}"
+      with_file:
+        - ~/.ssh/id_ecdsa.pub
+        - ~/.ssh/id_rsa.pub
+
+- hosts: localhost
+  become: no
+  tasks:
+    - name: When there are no VanillaHosts, end the playbook
+      block:
+        - debug:
+            msg: There are no host that can be stood up which are not already set up, or who have been entered into the vanilla state correctly. Exiting.
+        - meta: end_play
+      when: groups.VanillaHosts is undefined
+
+    # Create live hosts file
+    - name: Ensure a basic Hosts File exists and is ready to receive hosts
+      blockinfile:
+        insertafter: EOF
+        path: ~/.HAB/inventory/hosts
+        state: present
+        marker: "{mark}"
+        marker_begin: "### Start Ansible Managed Groups ###"
+        block: |-
+          [masters:children]
+          leader
+          lieutenants
+
+          [cluster:children]
+          masters
+          workers
+        marker_end: "### End Groups ###"
+        create: true
+    - name: Add the initial groups to hosts
+      lineinfile:
+        insertbefore: BOF
+        line: "{{ item }}"
+        search_string: "{{ item }}"
+        path: ~/.HAB/inventory/hosts
+        state: present
+      loop:
+        - "[workers]"
+        - "[lieutenants]"
+        - "[leader]"
+    - name: Get all the names of the hosts
+      set_fact:
+        hostNames: "{{ groups.VanillaHosts }}"
+    - name: For each host, add it to the host file group appropriately
+      lineinfile:
+        path: ~/.HAB/inventory/hosts
+        insertafter: "\\[{{ hostvars[item].k3s_roll }}"
+        line: "{{ item }} ansible_user={{ hostvars[item].k3s_roll }}"
+        state: present
+      loop: "{{ hostNames | reverse | list }}"
+    - name: Now that the hosts are updated, we can refresh the inventory
+      meta: refresh_inventory
+
+- hosts: cluster
+  become: yes
+  tasks:
+    # Disbale Vanilla Users
+    - name: Get all sudo users
+      shell: "grep '^sudo:.*$' /etc/group | cut -d: -f4"
+      register: sudoers
+      changed_when: false
+    - name: Get all the sudo users who are not the new user
+      set_fact:
+        usersToDisable: "{{ sudoers.stdout.split(',') | difference([ ansible_user ])  }}"
+    - name: Disable all users, to lock out all users except the new user
+      user:
+        name: "{{ item }}"
+        password_lock: yes
+      loop: "{{ usersToDisable }}"

@@ -1,0 +1,114 @@
+# Required to be run with --extra-vars subnet e.g.:
+# ansible-playbook prep-raw-pis.yml --extra-vars "subnet=10.1.0.20-29"
+
+# Start heavily commented notes:
+# On the control computer...
+- hosts: localhost
+  # do not attain super user privilages
+  become: no
+  # declare a list varriable called 'addresses'.
+  vars:
+    - addresses: []
+  # On the local host, do these tasks:
+  tasks:
+    - name: Get all addresses of potential raw pis (This could take a while...)
+      # 1. Use nmap to search the network for all the addresses in the given subnet of addresses, and return a block of data saved to a new varriable called 'nmap_output'
+      shell: nmap -n -sn  {{ subnet }} -oG - | awk '/Up$/{print $2}'
+      register: nmap_output
+      changed_when: false
+    - set_fact:
+        # add nmap_output (a list of IPs) to the list of addresses variable
+        addresses: "{{ addresses + nmap_output.stdout_lines }}"
+    - name: add hosts
+      # Loop over the addresses variable. For each address, add it as a host in memory for ansible in the group rawpis.
+      add_host:
+        name: "{{ item }}"
+        ansible_ssh_pass: "raspberryRaw"
+        group: rawpis
+        ansible_host: "{{ item }}"
+        ansible_user: pi
+        ansible_connection: ssh
+      loop: "{{ addresses }}"
+    - name: clean up known_hosts
+      # Clean up the .ssh/known_hosts file which gets poluted by all this imaging and connecting.
+      # Loop over the addresses variable. For each address, remove it from known_hosts
+      known_hosts:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ addresses }}"
+
+# Now, we have a new list of hosts that we can connect to, rawpis
+- hosts: rawpis
+  # for each host, get super user permissions (sudo)
+  become: yes
+  tasks:
+    # Update the system
+    # Occasionally, the sources drop out and updates stall. Sources are used for finding the latest updates.
+    - name: Make sure sources.list has extra options
+      lineinfile:
+        path: /etc/apt/sources.list
+        line: "{{ item }}"
+      with_items:
+        - "deb http://http.us.debian.org/debian/ bullseye main contrib non-free"
+        - "deb http://deb.debian.org/debian-security bullseye-security main contrib non-free"
+        - "deb http://http.us.debian.org/debian/ bullseye-updates main contrib non-free"
+    # Once we have a more robust source list, we need to include another list of tasks to complete, open it up and see what it does
+    - include_tasks: tasks/update-upgrade-host.yml
+
+    # Inspect and update RPi firmware. For these, the comment after "name" is sufficient for understanding what its doing.
+    - name: Get the status of the EEPROM firmware updater, if changed updating is needed
+      command: rpi-eeprom-update
+      register: eepromStatus
+      failed_when: "'FAILED' in eepromStatus.stderr"
+      changed_when: "eepromStatus.rc == 1"
+    - name: Update firmware if there is an update
+      when: eepromStatus.changed
+      command: rpi-eeprom-update -a
+    - name: Reboot the machine after update
+      when: eepromStatus.changed
+      reboot:
+    # Determin what the boot order is (1. SD Card? 2. USB? etc) and save it to 'configResults'
+    - name: Get boot order
+      command: rpi-eeprom-config
+      register: configResults
+      changed_when: False
+    # Take if/then action depending on what the boot order is:
+    # Log if the boot order is set correctly:
+    - name: For correctly set
+      when: configResults.stdout.find("BOOT_ORDER=0xf41") != -1
+      debug:
+        msg: "{{ inventory_hostname }} is correctly set"
+    - name: For incorrectly set
+      when: configResults.stdout.find("BOOT_ORDER=0xf41") == -1
+      debug:
+        msg: "{{ inventory_hostname }} is incorrectly set"
+    # If the boot order is incorrectly set, then set it correctly
+    # First copy a valid boot orde config to "/tmp/newConfig.conf"
+    - name: If boot order is not 1. SD Card, 2. USB, 3. Repeat, create a config file
+      when: configResults.stdout.find("BOOT_ORDER=0xf41") == -1
+      copy:
+        dest: "/tmp/newConfig.conf"
+        content: "{{ configResults.stdout }}"
+    # Change the BOOT_ORDER item to boot in the correct order for the new config
+    - name: Add appropriate boot order
+      when: configResults.stdout.find("BOOT_ORDER=0xf41") == -1
+      lineinfile:
+        path: "/tmp/newConfig.conf"
+        line: "BOOT_ORDER=0xf41"
+        regex: "BOOT_ORDER=0x1"
+        state: present
+    # Apply the new config file to the system
+    - name: Set new config file
+      when: configResults.stdout.find("BOOT_ORDER=0xf41") == -1
+      command: rpi-eeprom-config --apply /tmp/newConfig.conf
+    - name: Reboot the machine
+      reboot:
+    - name: Make sure boot order took
+      command: rpi-eeprom-config
+      register: newConfigResults
+      changed_when: False
+      failed_when: configResults.stdout.find("BOOT_ORDER=0xf41") == -1
+
+    # Looking good. Shut it all down to prep for booting from a USB drive.
+    - name: Shut everything down
+      community.general.shutdown:

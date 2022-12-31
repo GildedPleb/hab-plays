@@ -1,0 +1,200 @@
+- hosts: localhost
+  become: no
+  tasks:
+    # Get needed resources
+    - name: Download k3s install script
+      get_url:
+        url: https://get.k3s.io
+        dest: ./tasks/k3s_install.sh
+        mode: a+x
+
+- hosts: cluster
+  become: yes
+  tasks:
+    # Copy needed resources
+    - name: Copy install script to cluster
+      copy:
+        src: ./tasks/k3s_install.sh
+        dest: /tmp/k3s_install.sh
+        mode: a+x
+
+- hosts: leader
+  gather_facts: false
+  become: yes
+  tasks:
+    # Create or get server-token
+    - name: Make sure we can read data from vault-server-token file
+      become: no
+      local_action:
+        module: shell
+        cmd: ANSIBLE_CONFIG=../ansible.cfg ansible-vault view ~/.HAB/vault-server-token
+      register: serverTokenResults
+      changed_when: false
+      failed_when: false
+      no_log: true
+    - name: Create a new secret for server
+      when: serverTokenResults.rc != 0
+      shell: /usr/bin/openssl rand -base64 63 | tr -d '\n'
+      register: newSecret
+      no_log: true
+    - name: Write new vault definitions for vault-server-token to file
+      when: serverTokenResults.rc != 0
+      become: no
+      local_action:
+        module: shell
+        cmd: 'echo "serverToken: {{ newSecret.stdout }}" | ANSIBLE_CONFIG=../ansible.cfg ansible-vault encrypt --output ~/.HAB/vault-server-token'
+      no_log: true
+    - name: Re-get serverToken
+      set_fact:
+        serverToken: "{{ lookup('file', '~/.HAB/vault-server-token').split(' ')[1] }}"
+      no_log: true
+
+    # Install k3s HA on leader host
+    - name: Make sure k3s is not already running
+      systemd:
+        name: k3s
+      register: results
+    - name: If k3s is not already active...
+      when: results.status.ActiveState == "inactive"
+      block:
+        - name: Execute k3s_install.sh on the leader host
+          command: "/tmp/k3s_install.sh"
+          environment:
+            INSTALL_K3S_EXEC: "server --cluster-init --disable servicelb --disable traefik --log /tmp/k3s.log"
+            K3S_TOKEN: "{{ serverToken }}"
+            INSTALL_K3S_CHANNEL: latest
+            K3S_KUBECONFIG_MODE: "644"
+          changed_when: true
+          async: 20
+          poll: 5
+          register: result
+          retries: 100
+          delay: 1
+          until: result is not failed
+          no_log: true
+
+        # Copy node-token to vault
+        - name: Copy Server node token to control computer local directory
+          command: cat /var/lib/rancher/k3s/server/node-token
+          register: nodeTokenRaw
+          changed_when: false
+        - name: Write new vault definitions for vault-node-token to file
+          become: no
+          local_action:
+            module: shell
+            cmd: 'echo "nodeToken: {{ nodeTokenRaw.stdout }}" | ANSIBLE_CONFIG=../ansible.cfg ansible-vault encrypt --output ~/.HAB/vault-node-token'
+          no_log: true
+
+- hosts: lieutenants
+  gather_facts: false
+  become: yes
+  vars_files:
+    - ~/.HAB/vault-node-token
+  tasks:
+    # Install k3s HA on master hosts
+    - name: Make sure k3s is not already running
+      systemd:
+        name: k3s
+      register: results
+    - name: Execute k3s_install.sh for the other master hosts
+      when: results.status.ActiveState == "inactive"
+      command: "/tmp/k3s_install.sh"
+      environment:
+        INSTALL_K3S_EXEC: "server --server https://{{ groups['leader'][0] }}:6443  --disable servicelb --disable traefik --log /tmp/k3s.log"
+        K3S_TOKEN: "{{ nodeToken }}"
+        INSTALL_K3S_CHANNEL: latest
+        K3S_KUBECONFIG_MODE: "644"
+      changed_when: true
+      async: 20
+      poll: 5
+      register: result
+      retries: 100
+      delay: 1
+      until: result is not failed
+      no_log: true
+
+- hosts: masters
+  gather_facts: false
+  become: yes
+  tasks:
+    - name: Make sure k3s is running on all master hosts
+      systemd:
+        name: k3s
+        state: started
+
+- hosts: workers
+  gather_facts: false
+  become: yes
+  vars_files:
+    - ~/.HAB/vault-node-token
+  tasks:
+    # Install k3s on and join worker hosts to the cluster
+    - name: Make sure k3s-agent is not already running
+      systemd:
+        name: k3s-agent
+      register: results
+    - name: Join the cluster through the master host's DNS record by execute k3s_install.sh for worker hosts
+      when: results.status.ActiveState == "inactive"
+      command: "/tmp/k3s_install.sh --log /tmp/k3s.log"
+      environment:
+        K3S_TOKEN: "{{ nodeToken }}"
+        K3S_URL: https://{{ groups['leader'][0] }}:6443
+        K3S_NODE_NAME: "{{ inventory_hostname }}"
+        K3S_KUBECONFIG_MODE: "644"
+        INSTALL_K3S_CHANNEL: latest
+      changed_when: true
+      async: 20
+      poll: 5
+      register: result
+      retries: 100
+      delay: 1
+      until: result is not failed
+      no_log: true
+    - name: Make sure k3s-agent is running on all worker hosts
+      systemd:
+        name: k3s-agent
+        state: started
+
+- hosts: leader
+  gather_facts: false
+  become: yes
+  tasks:
+    # Label K3S worker hosts
+    - name: Wait for worker hosts to be ready
+      command: "kubectl get nodes {{ item }}"
+      register: hosts
+      until: '" Ready " in hosts.stdout'
+      retries: 15
+      delay: 5
+      with_items: "{{ groups['workers'] }}"
+      changed_when: false
+    - name: Label worker hosts
+      command: "kubectl label nodes {{ item }} kubernetes.io/role=worker"
+      with_items: "{{ groups['workers'] }}"
+      register: results
+      failed_when:
+        - results.rc != 0
+        - '"already has a value (worker)" not in results.stderr'
+      changed_when: false
+
+    # Transfer the remote kube config to the local control machine
+    - name: Copy k3s.yaml to config
+      copy:
+        remote_src: true
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /tmp/config
+      register: copyChanged
+    - name: Get the kube config file
+      when: copyChanged.changed
+      fetch:
+        src: /tmp/config
+        dest: ~/.kube/
+        flat: yes
+    - name: Edit the local config file to point to the master host
+      when: copyChanged.changed
+      become: no
+      local_action:
+        module: lineinfile
+        path: "~/.kube/config"
+        search_string: "127.0.0.1"
+        line: "    server: https://{{ groups['leader'][0] }}:6443"
