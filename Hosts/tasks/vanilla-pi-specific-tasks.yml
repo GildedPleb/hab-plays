@@ -1,12 +1,21 @@
 # Occasionally, the sources drop out and updates stall
+- name: "Comment out all old mirrors"
+  replace:
+    path: /etc/apt/sources.list
+    regexp: '^\s*(?!(#.*))'
+    replace: '#\1'
 - name: Make sure sources.list has extra options
   lineinfile:
     path: /etc/apt/sources.list
+    regexp: '^\s*(#{{ item }})'
     line: "{{ item }}"
-  with_items:
-    - "deb http://http.us.debian.org/debian/ bullseye main contrib non-free"
-    - "deb http://deb.debian.org/debian-security bullseye-security main contrib non-free"
-    - "deb http://http.us.debian.org/debian/ bullseye-updates main contrib non-free"
+  loop:
+    - deb https://mirrors.namecheap.com/debian/ bullseye main contrib non-free
+    - deb https://mirrors.namecheap.com/debian/ bullseye-updates main contrib non-free
+    - deb https://mirrors.ocf.berkeley.edu/debian/ bullseye main contrib non-free
+    - deb https://mirrors.ocf.berkeley.edu/debian/ bullseye-updates main contrib non-free
+    - deb https://mirrors.wikimedia.org/debian/ bullseye main contrib non-free
+    - deb https://mirrors.wikimedia.org/debian/ bullseye-updates main contrib non-free
 
 # Add useful MOTD message
 - name: Remove Default MOTD
@@ -184,7 +193,7 @@
 - name: Flush iptables
   iptables:
     flush: yes
-  changed_when: false   # iptables flush always returns changed
+  changed_when: false # iptables flush always returns changed
 - name: Correct iptables legacy versioning - ipv4
   community.general.alternatives:
     name: iptables
@@ -193,7 +202,6 @@
   community.general.alternatives:
     name: ip6tables
     path: /usr/sbin/ip6tables-legacy
-
 ######################
 # # Maybe do this?
 # # https://github.com/k3s-io/k3s-ansible/blob/master/roles/prereq/tasks/main.yml

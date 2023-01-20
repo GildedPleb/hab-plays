@@ -6,6 +6,7 @@
       - nfs-common
       - jq
       - gdisk
+      - ipvsadm
 - name: Ensure a list of packages installed
   apt:
     name: "{{ packages }}"
@@ -15,9 +16,16 @@
   delay: 10
   until: result is not failed
 
-  # Required for longhorn
+# Required for longhorn
 - name: Ensure iscsi is running on boot and is started
   systemd:
     name: iscsid
     state: started
     enabled: yes
+
+# Required for kube-vip
+- name: Ensure ip_vs module is loaded on boot
+  lineinfile:
+    path: /etc/modules
+    state: present
+    line: "ip_vs"
