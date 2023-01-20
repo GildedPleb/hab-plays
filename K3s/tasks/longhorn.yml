@@ -11,8 +11,13 @@
     create_namespace: yes
     chart_ref: longhorn/longhorn
     wait: yes
-    values_files:
-      - K3s/charts/longhorn/values.yml
+    values:
+      # More values here: https://github.com/longhorn/longhorn/blob/master/chart/values.yaml
+      defaultSettings:
+        # TODO: document nfs and how it should be changed
+        nodeDownPodDeletionPolicy: delete-both-statefulset-and-deployment-pod
+      persistence:
+        defaultDataLocality: best-effort
 
 # Edit reserve amounts
 - name: Wait until all lhn hosts are found
