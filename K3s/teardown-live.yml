@@ -48,6 +48,16 @@
         name: longhorn-system
         state: absent
 
+- hosts: cluster
+  become: true
+  tasks:
+    - name: "Remove longhorn created directories and files"
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/longhorn
+
     # TODO: Add proper host level cleanup -- aka remove longhorn artifacts and files on each host. as per: https://github.com/ricsanfre/pi-cluster/blob/8e303719a4111be603c8b32bfa339f0f253f4172/tasks/cleaning.yml
 
     # Unistall Cert Mananger, Ingress, and Load Balancer

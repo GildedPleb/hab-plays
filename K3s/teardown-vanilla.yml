@@ -1,9 +1,7 @@
-
 - hosts: localhost
   become: no
   throttle: 1
   tasks:
-
     # Drain and delete passed nodes -- We could do this with the entire cluster,
     # when deleting the cluster, but when deleting the cluster... it doesn't matter.
     - name: Drain Node before terminating
@@ -45,10 +43,25 @@
       shell: /usr/local/bin/k3s-uninstall.sh
       ignore_errors: yes
 
+- hosts: cluster
+  become: yes
+  tasks:
+    - name: "Remove k3s created directories and files"
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/rancher
+        - /etc/rancher
+        - ~/.kube
+      when: killhosts is undefined
+    - name: Reboot every host
+      reboot:
+
 - hosts: localhost
   become: no
   tasks:
-    - name: 'Remove created tokens'
+    - name: "Remove created tokens"
       file:
         path: "~/.HAB/{{ item }}"
         state: absent

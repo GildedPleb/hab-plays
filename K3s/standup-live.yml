@@ -9,15 +9,16 @@
         state: present
 
     # Check that each node is ready for longhorn
+    - name: Get longhorn environment check
+      get_url:
+        url: https://raw.githubusercontent.com/longhorn/longhorn/v1.4.0/scripts/environment_check.sh
+        dest: ~/.HAB/remote_content/longhorn-env-checker.sh
     - name: Run longhorn environment check
-      shell: curl -sSfL https://raw.githubusercontent.com/longhorn/longhorn/v1.3.2/scripts/environment_check.sh | bash
+      shell: curl -sSfL https://raw.githubusercontent.com/longhorn/longhorn/v1.4.0/scripts/environment_check.sh | bash
       changed_when: false
 
     # Install k3s automated upgrades
     - include_tasks: tasks/system-upgrade-controller.yml
-
-    # Add and Install MetalLB
-    - include_tasks: tasks/metalLB.yml
 
     # Add and Install nginx
     - include_tasks: tasks/nginx.yml

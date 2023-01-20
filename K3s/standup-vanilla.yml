@@ -1,12 +1,30 @@
 - hosts: localhost
   become: no
   tasks:
+    # Install checks
+    - name: Make sure we have a virtual IP assigned
+      fail:
+        msg: To install k3s, you must pass an extra args for the virtual IP addresses when executing the play. E.g. "ansible-playbook K3s/standup-vanilla.yml -e 'vip=10.1.0.50 serviceRange=10.1.0.51-10.1.0.99' "
+      when: ( vip is undefined ) or ( serviceRange is undefined )
+
     # Get needed resources
+    - name: Create a remote-content directory
+      file:
+        path: ~/.HAB/remote_content/
+        state: directory
     - name: Download k3s install script
       get_url:
         url: https://get.k3s.io
-        dest: ./tasks/k3s_install.sh
+        dest: ~/.HAB/remote_content/k3s_install.sh
         mode: a+x
+    - name: Get role based permission definitions for kube-vip
+      get_url:
+        url: https://kube-vip.io/manifests/rbac.yaml
+        dest: ~/.HAB/remote_content/kube-vip-rbac.yaml
+    - name: Get cloud-controler definitions for kube-vip
+      get_url:
+        url: https://raw.githubusercontent.com/kube-vip/kube-vip-cloud-provider/main/manifest/kube-vip-cloud-controller.yaml
+        dest: ~/.HAB/remote_content/kube-vip-cloud-controller.yaml
 
 - hosts: cluster
   become: yes
@@ -14,7 +32,7 @@
     # Copy needed resources
     - name: Copy install script to cluster
       copy:
-        src: ./tasks/k3s_install.sh
+        src: ~/.HAB/remote_content/k3s_install.sh
         dest: /tmp/k3s_install.sh
         mode: a+x
 
@@ -22,6 +40,16 @@
   gather_facts: false
   become: yes
   tasks:
+    # Copy over needed resources
+    - name: Copy kube-vip-rbac.yaml to cluster
+      copy:
+        src: ~/.HAB/remote_content/kube-vip-rbac.yaml
+        dest: /tmp/kube-vip-rbac.yaml
+    - name: Copy kube-vip-cloud-controller.yaml to cluster
+      copy:
+        src: ~/.HAB/remote_content/kube-vip-cloud-controller.yaml
+        dest: /tmp/kube-vip-cloud-controller.yaml
+
     # Create or get server-token
     - name: Make sure we can read data from vault-server-token file
       become: no
@@ -60,7 +88,8 @@
         - name: Execute k3s_install.sh on the leader host
           command: "/tmp/k3s_install.sh"
           environment:
-            INSTALL_K3S_EXEC: "server --cluster-init --disable servicelb --disable traefik --log /tmp/k3s.log"
+            # consider adding: --flannel-backend wireguard-native and --secrets-encryption
+            INSTALL_K3S_EXEC: "server --cluster-init --disable servicelb --disable traefik --log /tmp/k3s.log --tls-san {{ vip }} "
             K3S_TOKEN: "{{ serverToken }}"
             INSTALL_K3S_CHANNEL: latest
             K3S_KUBECONFIG_MODE: "644"
@@ -72,6 +101,40 @@
           delay: 1
           until: result is not failed
           no_log: true
+
+        # install kube-vip
+        - name: Get latest release info for kube-vip
+          become: no
+          local_action:
+            module: shell
+            cmd: 'curl -sL https://api.github.com/repos/kube-vip/kube-vip/releases | jq -r ".[0].name"'
+          register: release
+        - name: Wait for config to populate so we can access the kubernetes instance
+          wait_for:
+            path: /etc/rancher/k3s/k3s.yaml
+        - name: Install kube-vip RBAC
+          shell: kubectl apply -f /tmp/kube-vip-rbac.yaml
+          retries: 100
+          delay: 5
+          until: result is not failed
+          register: result
+        - name: Pull kube-vip image
+          shell: "ctr image pull ghcr.io/kube-vip/kube-vip:{{ release.stdout }}"
+          retries: 100
+          delay: 5
+          until: result is not failed
+          register: result
+        - name: Generate kube-vip manifests
+          shell: ctr run
+            --rm --net-host
+            ghcr.io/kube-vip/kube-vip:{{ release.stdout }} vip /kube-vip manifest daemonset
+            --address {{ vip }} --inCluster --taint --controlplane --enableLoadBalancer --services --arp --leaderElection > /tmp/kube-vip.yaml
+        - name: Apply the generated manifest
+          shell: kubectl apply -f /tmp/kube-vip.yaml
+        - name: Apply the cloud controller
+          shell: kubectl apply -f /tmp/kube-vip-cloud-controller.yaml
+        - name: Create a configmap
+          shell: kubectl create configmap -n kube-system kubevip --from-literal range-global={{ serviceRange }}
 
         # Copy node-token to vault
         - name: Copy Server node token to control computer local directory
@@ -100,7 +163,7 @@
       when: results.status.ActiveState == "inactive"
       command: "/tmp/k3s_install.sh"
       environment:
-        INSTALL_K3S_EXEC: "server --server https://{{ groups['leader'][0] }}:6443  --disable servicelb --disable traefik --log /tmp/k3s.log"
+        INSTALL_K3S_EXEC: "server --server https://{{ vip }}:6443 --disable servicelb --disable traefik --log /tmp/k3s.log"
         K3S_TOKEN: "{{ nodeToken }}"
         INSTALL_K3S_CHANNEL: latest
         K3S_KUBECONFIG_MODE: "644"
@@ -133,12 +196,12 @@
       systemd:
         name: k3s-agent
       register: results
-    - name: Join the cluster through the master host's DNS record by execute k3s_install.sh for worker hosts
+    - name: Join the cluster through the master host's DNS record by executing k3s_install.sh for worker hosts
       when: results.status.ActiveState == "inactive"
       command: "/tmp/k3s_install.sh --log /tmp/k3s.log"
       environment:
         K3S_TOKEN: "{{ nodeToken }}"
-        K3S_URL: https://{{ groups['leader'][0] }}:6443
+        K3S_URL: https://{{ vip }}:6443
         K3S_NODE_NAME: "{{ inventory_hostname }}"
         K3S_KUBECONFIG_MODE: "644"
         INSTALL_K3S_CHANNEL: latest
@@ -197,4 +260,4 @@
         module: lineinfile
         path: "~/.kube/config"
         search_string: "127.0.0.1"
-        line: "    server: https://{{ groups['leader'][0] }}:6443"
+        line: "    server: https://{{ vip }}:6443"
