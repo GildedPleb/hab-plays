@@ -40,18 +40,17 @@
         name: longhorn
         namespace: longhorn-system
         state: absent
-        wait: yes
-        retries: 10
-        delay: 5
-        register: result
-        until: result.rc == 0
-        failed_when: result.rc != 0
+      register: result
+      failed_when: false
     - name: Delete Longhorn namespace
       kubernetes.core.k8s:
         api_version: v1
         kind: Namespace
         name: longhorn-system
         state: absent
+    # TODO: There is a bug here. Deleting the namespace waits forever on resources that are not being deleted. The following command will delete those resources. But it will also mean that you have to teardown vanilla k3s to start longhorn again.     
+    # - name: Force delete longhorn
+    #   shell: NAMESPACE=longhorn-system; kubectl get namespace $NAMESPACE -o json | jq 'del(.spec.finalizers[0])' | kubectl replace --raw "/api/v1/namespaces/$NAMESPACE/finalize" -f -
 
 - hosts: cluster
   become: true
