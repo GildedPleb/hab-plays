@@ -25,6 +25,29 @@
       get_url:
         url: https://raw.githubusercontent.com/kube-vip/kube-vip-cloud-provider/main/manifest/kube-vip-cloud-controller.yaml
         dest: ~/.HAB/remote_content/kube-vip-cloud-controller.yaml
+    - name: Get cloud-controler definitions for kube-vip
+      get_url:
+        url: https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
+        dest: ~/.HAB/remote_content/metallb-native.yaml
+    - name: Create MetalLB config
+      copy:
+        dest: ~/.HAB/remote_content/metallb-config.yaml
+        content: |-
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: first-pool
+            namespace: metallb-system
+          spec:
+            addresses:
+            - {{ serviceRange }}
+          ---
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: l2-ads-for-global-ips
+            namespace: metallb-system
+          ---
 
 - hosts: cluster
   become: yes
@@ -41,14 +64,15 @@
   become: yes
   tasks:
     # Copy over needed resources
-    - name: Copy kube-vip-rbac.yaml to cluster
+    - name: Copy remote resources to the cluster
       copy:
-        src: ~/.HAB/remote_content/kube-vip-rbac.yaml
-        dest: /tmp/kube-vip-rbac.yaml
-    - name: Copy kube-vip-cloud-controller.yaml to cluster
-      copy:
-        src: ~/.HAB/remote_content/kube-vip-cloud-controller.yaml
-        dest: /tmp/kube-vip-cloud-controller.yaml
+        src: ~/.HAB/remote_content/{{ item}}
+        dest: /tmp/{{ item }}
+      loop:
+        - kube-vip-rbac.yaml
+        - kube-vip-cloud-controller.yaml
+        - metallb-native.yaml
+        - metallb-config.yaml
 
     # Create or get server-token
     - name: Make sure we can read data from vault-server-token file
@@ -128,13 +152,11 @@
           shell: ctr run
             --rm --net-host
             ghcr.io/kube-vip/kube-vip:{{ release.stdout }} vip /kube-vip manifest daemonset
-            --address {{ vip }} --inCluster --taint --controlplane --enableLoadBalancer --services --arp --leaderElection > /tmp/kube-vip.yaml
+            --address {{ vip }} --inCluster --taint --controlplane --services --arp --leaderElection > /tmp/kube-vip.yaml
         - name: Apply the generated manifest
           shell: kubectl apply -f /tmp/kube-vip.yaml
         - name: Apply the cloud controller
           shell: kubectl apply -f /tmp/kube-vip-cloud-controller.yaml
-        - name: Create a configmap
-          shell: kubectl create configmap -n kube-system kubevip --from-literal range-global={{ serviceRange }}
 
         # Copy node-token to vault
         - name: Copy Server node token to control computer local directory
@@ -261,3 +283,14 @@
         path: "~/.kube/config"
         search_string: "127.0.0.1"
         line: "    server: https://{{ vip }}:6443"
+
+    # Install MetalLB Load Balancer
+    - name: Apply the metalLB load balancer
+      shell: kubectl apply -f /tmp/metallb-native.yaml
+    - name: Apply the metalLB config
+      shell: kubectl apply -f /tmp/metallb-config.yaml
+      retries: 10
+      delay: 5
+      register: result
+      until: result.rc == 0
+      failed_when: result.rc != 0

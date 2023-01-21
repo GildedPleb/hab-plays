@@ -41,6 +41,11 @@
         namespace: longhorn-system
         state: absent
         wait: yes
+        retries: 10
+        delay: 5
+        register: result
+        until: result.rc == 0
+        failed_when: result.rc != 0
     - name: Delete Longhorn namespace
       kubernetes.core.k8s:
         api_version: v1
@@ -59,7 +64,8 @@
         - /var/lib/longhorn
 
     # TODO: Add proper host level cleanup -- aka remove longhorn artifacts and files on each host. as per: https://github.com/ricsanfre/pi-cluster/blob/8e303719a4111be603c8b32bfa339f0f253f4172/tasks/cleaning.yml
-
+- hosts: localhost
+  tasks:
     # Unistall Cert Mananger, Ingress, and Load Balancer
     - name: Uninstall Cert Manager
       kubernetes.core.helm:
@@ -77,12 +83,6 @@
       kubernetes.core.helm:
         namespace: kube-system
         name: nginx
-        state: absent
-        wait: true
-    - name: Uninstall metallb
-      kubernetes.core.helm:
-        namespace: kube-system
-        name: metallb
         state: absent
         wait: true
 
