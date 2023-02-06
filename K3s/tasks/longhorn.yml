@@ -64,7 +64,7 @@
     lhPassword: "{{ lookup('file', '~/.HAB/vault-lh-auth-token').split(' ')[2] }}"
   no_log: true
 - name: Get auth token
-  shell: echo "admin:$(openssl passwd -stdin -6 <<< {{ lhPassword }})"
+  shell: echo "admin:$(/usr/bin/openssl passwd -stdin -6 <<< {{ lhPassword }})"
   register: authToken
   changed_when: lhAuthTokenResults.rc != 0
   no_log: true
