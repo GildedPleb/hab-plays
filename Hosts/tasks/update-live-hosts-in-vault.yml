@@ -1,14 +1,14 @@
 # Generate and format password
 - name: generate random password for user
-  shell: /usr/bin/openssl rand -base64 63 | tr -d '\n'
+  shell: openssl rand -base64 63 | tr -d '\n'
   register: newPassword
   no_log: true
 - name: generate random salt for user
-  command: /usr/bin/openssl rand -base64 12
+  command: openssl rand -base64 12
   register: salt
   no_log: true
 - name: generate password hash for user
-  shell: /usr/bin/openssl passwd -salt '{{ salt.stdout }}' -6 '{{ newPassword.stdout }}'
+  shell: openssl passwd -salt '{{ salt.stdout }}' -6 '{{ newPassword.stdout }}'
   register: hashed
   no_log: true
 

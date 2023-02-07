@@ -52,7 +52,7 @@
   no_log: true
 - name: Create a new password for LongHorn
   when: lhAuthTokenResults.rc != 0
-  shell: /usr/bin/openssl rand -base64 63 | tr -d '\n'
+  shell: openssl rand -base64 63 | tr -d '\n'
   register: newPassword
   no_log: true
 - name: Write newPassword for vault-lh-auth-token to file if needed
@@ -64,7 +64,7 @@
     lhPassword: "{{ lookup('file', '~/.HAB/vault-lh-auth-token').split(' ')[2] }}"
   no_log: true
 - name: Get auth token
-  shell: echo "admin:$(/usr/bin/openssl passwd -stdin -6 <<< {{ lhPassword }})"
+  shell: echo "admin:$(openssl passwd -stdin -6 <<< {{ lhPassword }})"
   register: authToken
   changed_when: lhAuthTokenResults.rc != 0
   no_log: true
@@ -108,7 +108,7 @@
   no_log: true
 - name: Create a new encryption secret for LongHorn
   when: lhEncryptionSecretResults.rc != 0
-  shell: /usr/bin/openssl rand -base64 63 | tr -d '\n'
+  shell: openssl rand -base64 63 | tr -d '\n'
   register: newSecret
   no_log: true
 - name: Write new encryption secret for vault-lh-encryption-token to file if needed
