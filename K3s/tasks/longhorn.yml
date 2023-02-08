@@ -65,6 +65,9 @@
   no_log: true
 - name: Get auth token
   shell: echo "admin:$(openssl passwd -stdin -6 <<< {{ lhPassword }})"
+  # args:executable is needed because redirects ("<<<") do not work in `/bin/sh`, which is the default shell for `shell` commands in Ansible. 
+  args:
+    executable: /bin/bash
   register: authToken
   changed_when: lhAuthTokenResults.rc != 0
   no_log: true
