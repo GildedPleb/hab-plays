@@ -63,10 +63,26 @@
     - name: Get vanilla hosts
       set_fact:
         vanillaHosts: "{{ lookup('pipe', 'cat ~/.HAB/inventory/vanilla-hosts').split('\n') }}"
-    - name: Assert that the hostname is not used elsewhere
+    - name: Find all matching hostname entries
+      set_fact:
+        matching_hostnames: "{{ vanillaHosts | select('contains', hostName) | list }}"
+    - name: Assert only one or zero matching hostname entries exist
       assert:
-        that: vanillaHosts | select('match', '^({{ hostName }}).+(?<!{{ macAddr }})$') | length == 0
-        fail_msg: "The given hostname {{ hostName }} already exists in the vanillahosts inventory"
+        that:
+          - matching_hostnames | length <= 1
+        fail_msg: "More than one entry for hostname {{ hostName }} exists in the vanilla hosts inventory."
+        quiet: yes
+    - name: Assert that not-zero host-names were found.
+      assert:
+        that:
+          - matching_hostnames | length == 1
+        fail_msg: "Could not find hostname {{ hostName }} in the vanilla hosts inventory."
+        quiet: yes
+    - name: Assert the found entry matches the given MAC address
+      assert:
+        that:
+          - matching_hostnames | select('search', macAddr) | list | length == 1
+        fail_msg: "The given hostname {{ hostName }} exists in the vanilla hosts inventory with a different MAC address."
         quiet: yes
 
     # Determin the OS for each host, and take appropriate action
